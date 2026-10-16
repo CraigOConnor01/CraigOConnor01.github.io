@@ -1,0 +1,80 @@
+name: Refresh public Congress bill snapshot
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: congress-bill-snapshot
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Fetch recently updated bills
+        env:
+          CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          from datetime import datetime, timedelta, timezone
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+
+          key = os.environ.get('CONGRESS_API_KEY', '').strip()
+          if not key:
+              raise SystemExit('Missing repository secret CONGRESS_API_KEY')
+
+          now = datetime.now(timezone.utc)
+          from_dt = (now - timedelta(days=30)).isoformat(timespec='seconds').replace('+00:00', 'Z')
+          bills = []
+          truncated = False
+          limit = 50
+          for page in range(8):
+              params = {'api_key': key, 'format': 'json', 'limit': str(limit),
+                        'offset': str(page * limit), 'sort': 'updateDate+desc',
+                        'fromDateTime': from_dt}
+              url = 'https://api.congress.gov/v3/bill?' + urlencode(params)
+              req = Request(url, headers={'Accept': 'application/json',
+                            'User-Agent': 'CraigOConnor01-BillTracker/1.0'})
+              with urlopen(req, timeout=45) as response:
+                  payload = json.load(response)
+              page_bills = payload.get('bills', [])
+              bills.extend(page_bills)
+              if len(page_bills) < limit:
+                  break
+              if page == 7:
+                  truncated = True
+              time.sleep(0.2)
+
+          os.makedirs('public-data', exist_ok=True)
+          snapshot = {'generatedAt': now.isoformat(timespec='seconds').replace('+00:00', 'Z'),
+                      'lookbackDays': 30, 'truncated': truncated, 'bills': bills}
+          with open('public-data/bills.json', 'w', encoding='utf-8') as f:
+              json.dump(snapshot, f, ensure_ascii=False, separators=(',', ':'))
+              f.write('\n')
+          print('Fetched', len(bills), 'bill records')
+          PY
+
+      - name: Publish the latest snapshot without accumulating history
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          mkdir -p /tmp/bill-snapshot
+          cp public-data/bills.json /tmp/bill-snapshot/bills.json
+          git checkout --orphan bill-data
+          git rm -rf . >/dev/null 2>&1 || true
+          cp /tmp/bill-snapshot/bills.json bills.json
+          git add bills.json
+          git commit -m 'Publish latest bill snapshot'
+          git push --force origin HEAD:bill-data
