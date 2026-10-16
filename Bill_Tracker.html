@@ -397,7 +397,7 @@
         <div class="masthead-sub">Federal Legislative Monitoring Dashboard</div>
       </div>
       <div class="masthead-meta" id="metaBlock">
-        <div><span class="ticker" id="ticker"></span><span id="lastCheckedLabel">NOT YET CHECKED</span></div>
+        <div><span class="ticker" id="ticker"></span><span id="lastCheckedLabel">LOADING SNAPSHOT</span></div>
         <div>AUTO-REFRESH: HOURLY</div>
         <div id="nextCheckLabel">—</div>
       </div>
@@ -405,13 +405,13 @@
   </div>
   <div class="controls-bar">
     <div class="controls-bar-inner">
-      <span class="ctrl-label">API Key</span>
-      <input class="ctrl-input key-input" type="password" id="apiKeyInput" placeholder="Your Congress.gov API key" autocomplete="off">
+      <span class="ctrl-label">DATA SOURCE</span>
+      <span class="ctrl-label" style="color:var(--gold-light)">Congress.gov · Public snapshot</span>
       <span class="ctrl-sep">|</span>
       <span class="ctrl-label">Look back</span>
       <input class="ctrl-input days-input" type="number" id="daysInput" value="1" min="1" max="30">
       <span class="ctrl-label">days</span>
-      <button class="btn btn-primary" id="fetchBtn" onclick="triggerFetch()">Fetch Updates</button>
+      <button class="btn btn-primary" id="fetchBtn" onclick="triggerFetch()">Refresh Snapshot</button>
       <button class="btn btn-ghost" id="highlightsToggle" onclick="toggleMode()">Highlights Only</button>
     </div>
   </div>
@@ -426,22 +426,16 @@
   <div id="content">
     <div class="state-box">
       <span class="state-icon">🏛️</span>
-      <p>Enter your Congress.gov API key above and click <strong>Fetch Updates</strong>.<br>
+      <p>Loading the latest published Congress.gov snapshot…<br>
       Bills with major milestones will appear here, grouped by importance.<br><br>
-      Don't have a key? Get one free at <strong>api.congress.gov/sign-up</strong></p>
+      Public data loads automatically. No API key is required.</p>
     </div>
   </div>
 </div>
 
 <script>
-// ── CONSTANTS ──────────────────────────────────────────────────────────────
-const API_BASE = "https://api.congress.gov/v3";
-
-const TIERS = [
-  {
-    priority: 1,
-    label: "BECAME LAW / VETOED",
-    dot: "#8B1A2A",
+// ── CONSTANTS ────────────────────────────────────────────────<script>
+  dot: "#8B1A2A",
     cssClass: "tier-1",
     keywords: [
       ["became public law", "signed by president", "public law no"],
@@ -515,240 +509,56 @@ function classifyBill(bill) {
   return null;
 }
 
-// ── STATE ──────────────────────────────────────────────────────────────────
-let allBills = [];
-let highlights = [];
-let highlightsOnly = false;
-let lastChecked = null;
-let autoRefreshTimer = null;
-let nextCheckAt = null;
-let countdownTimer = null;
+// ── STATE ─────────────────────────────────────────────────────────────
 
-// ── FETCH ──────────────────────────────────────────────────────────────────
-async function fetchPage(apiKey, fromDt, offset, limit) {
-  const params = new URLSearchParams({
-    api_key: apiKey,
-    format: "json",
-    limit: String(limit),
-    offset: String(offset),
-    sort: "updateDate+desc",
-    fromDateTime: fromDt,
-  });
-  const resp = await fetch(`${API_BASE}/bill?${params}`);
-  if (!resp.ok) {
-    const body = await resp.text();
-    throw new Error(`Congress.gov API error ${resp.status}: ${body}`);
-  }
-  return resp.json();
+const SNAPSHOT_URL = "https://raw.githubusercontent.com/CraigOConnor01/CraigOConnor01.github.io/bill-data/bills.json";
+const REFRESH_MS = 3600000;
+let allBills = [], highlightsOnly = false, lastChecked = null, timer = null, countdown = null, nextAt = null, loading = false, lastAttempt = 0, truncated = false;
+function setLoading(v){const b=document.getElementById("fetchBtn");b.disabled=v;b.textContent=v?"Loading…":"Refresh Snapshot";}
+function setTicker(v){document.getElementById("ticker").className=v?"ticker live":"ticker";}
+function updateMeta(){
+ document.getElementById("lastCheckedLabel").textContent=lastChecked?"SNAPSHOT PUBLISHED: "+lastChecked.toLocaleTimeString():"SNAPSHOT NOT YET AVAILABLE";
+ if(nextAt){const s=Math.max(0,Math.round((nextAt-Date.now())/1000));document.getElementById("nextCheckLabel").textContent="NEXT CHECK: "+Math.floor(s/60)+":"+String(s%60).padStart(2,"0");}
 }
-
-async function fetchAllBills(apiKey, fromDt) {
-  const all = [];
-  const limit = 50;
-  const maxPages = 8;
-  for (let page = 0; page < maxPages; page++) {
-    const data = await fetchPage(apiKey, fromDt, page * limit, limit);
-    const bills = data.bills || [];
-    all.push(...bills);
-    if (bills.length < limit) break;
-    await new Promise(r => setTimeout(r, 300));
-  }
-  return all;
+function scheduleRefresh(){clearTimeout(timer);nextAt=Date.now()+REFRESH_MS;clearInterval(countdown);countdown=setInterval(updateMeta,1000);updateMeta();timer=setTimeout(loadSnapshot,REFRESH_MS);}
+function escHtml(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
+function billUrl(b){const ch=(b.originChamber||"").toLowerCase();return "https://www.congress.gov/bill/"+(b.congress||"")+"th-congress/"+(ch==="house"?"house-bill":"senate-bill")+"/"+(b.number||"");}
+function renderCard(b,cls){
+ const info=classifyBill(b)||{}, action=(b.latestAction||{}).text||"", date=(b.latestAction||{}).actionDate||"";
+ return '<div class="bill-card '+cls+'"><div class="card-head"><div class="bill-id">'+escHtml(String(b.type||"").toUpperCase()+(b.number||""))+'<br><span style="font-weight:400;color:var(--slate-light)">'+escHtml(b.congress?b.congress+"th":"")+'</span></div><div class="card-title-block"><div class="card-title">'+escHtml(b.title||"(no title)")+'</div></div></div><div class="card-body">'+(info.label?'<span class="milestone-badge">'+escHtml(info.label)+'</span>':"")+(action?'<div class="action-text">"'+escHtml(action)+'"</div>':"")+(date?'<div class="action-date">'+escHtml(date)+'</div>':"")+'</div><div class="card-footer"><span class="chamber-tag">'+escHtml((b.originChamber||"N/A").toUpperCase())+'</span><a class="card-link" href="'+escHtml(billUrl(b))+'" target="_blank" rel="noopener noreferrer">Congress.gov →</a></div></div>';
 }
-
-// ── UI ─────────────────────────────────────────────────────────────────────
-function setLoading(loading) {
-  const btn = document.getElementById("fetchBtn");
-  btn.disabled = loading;
-  btn.textContent = loading ? "Fetching…" : "Fetch Updates";
+function filteredBills(){const days=Math.max(1,Math.min(30,parseInt(document.getElementById("daysInput").value,10)||1)), cutoff=Date.now()-days*86400000;return allBills.filter(b=>{const raw=b.updateDate||(b.latestAction||{}).actionDate;if(!raw)return true;const d=new Date(raw);return Number.isNaN(d.getTime())||d.getTime()>=cutoff;});}
+function renderDashboard(bills){
+ const content=document.getElementById("content"), status=document.getElementById("statusBar"), chips=document.getElementById("countChips"), hl=bills.filter(b=>classifyBill(b)), show=highlightsOnly?hl:bills;
+ status.style.display="flex";chips.innerHTML='<span class="count-chip">Total updated: <strong>'+bills.length+'</strong></span><span class="count-chip">Milestones: <strong>'+hl.length+'</strong></span>';
+ if(!show.length){content.innerHTML='<div class="state-box"><span class="state-icon">📭</span><p>No '+(highlightsOnly?"milestone ":"")+'bills found in this time window.<br>Try increasing the lookback period.</p></div>';return;}
+ let out="";
+ for(const tier of TIERS){const rows=hl.filter(b=>(classifyBill(b)||{}).priority===tier.priority);if(!rows.length)continue;out+='<div class="section-header"><div class="section-dot" style="background:'+tier.dot+'"></div><div class="section-title">'+tier.label+'</div><div class="section-line"></div></div><div class="cards-grid">'+rows.map(b=>renderCard(b,tier.cssClass)).join("")+'</div>';}
+ if(!highlightsOnly){const rest=bills.filter(b=>!classifyBill(b));if(rest.length)out+='<div class="section-header"><div class="section-dot" style="background:var(--slate-light)"></div><div class="section-title">ALL OTHER UPDATES ('+rest.length+')</div><div class="section-line"></div></div><div class="cards-grid">'+rest.map(b=>renderCard(b,"")).join("")+'</div>';}
+ if(truncated)out='<p style="font:11px Courier New,monospace;color:var(--text-muted);margin-bottom:12px">Showing up to 400 recently updated records.</p>'+out;
+ content.innerHTML=out;
 }
-
-function setTicker(live) {
-  const t = document.getElementById("ticker");
-  t.className = live ? "ticker live" : "ticker";
-}
-
-function updateMeta() {
-  const label = document.getElementById("lastCheckedLabel");
-  const next  = document.getElementById("nextCheckLabel");
-  if (!lastChecked) return;
-  label.textContent = "LAST CHECK: " + lastChecked.toLocaleTimeString();
-  if (nextCheckAt) {
-    const diff = Math.max(0, Math.round((nextCheckAt - Date.now()) / 1000));
-    const m = Math.floor(diff / 60), s = diff % 60;
-    next.textContent = `NEXT IN: ${m}:${s.toString().padStart(2,"0")}`;
-  }
-}
-
-function startCountdown() {
-  clearInterval(countdownTimer);
-  countdownTimer = setInterval(updateMeta, 1000);
-}
-
-function scheduleAutoRefresh(apiKey, days) {
-  clearTimeout(autoRefreshTimer);
-  nextCheckAt = Date.now() + 60 * 60 * 1000;
-  startCountdown();
-  autoRefreshTimer = setTimeout(() => {
-    doFetch(apiKey, days);
-  }, 60 * 60 * 1000);
-}
-
-function billUrl(bill) {
-  const congress = bill.congress || "";
-  const number   = bill.number   || "";
-  const chamber  = (bill.originChamber || "").toLowerCase();
-  const path     = chamber === "house" ? "house-bill" : "senate-bill";
-  return `https://www.congress.gov/bill/${congress}th-congress/${path}/${number}`;
-}
-
-function renderCard(bill, cls, isNew) {
-  const info     = classifyBill(bill) || {};
-  const billId   = `${bill.type || ""}${bill.number || ""}`;
-  const congress = bill.congress ? `${bill.congress}th` : "";
-  const title    = bill.title || "(no title)";
-  const action   = (bill.latestAction || {}).text   || "";
-  const actDate  = (bill.latestAction || {}).actionDate || "";
-  const chamber  = bill.originChamber || "N/A";
-  const url      = billUrl(bill);
-
-  return `
-  <div class="bill-card ${cls}${isNew ? " new-card" : ""}">
-    <div class="card-head">
-      <div class="bill-id">${billId}<br><span style="font-weight:400;color:var(--slate-light)">${congress}</span></div>
-      <div class="card-title-block">
-        <div class="card-title">${escHtml(title)}</div>
-      </div>
-    </div>
-    <div class="card-body">
-      ${info.label ? `<span class="milestone-badge">${info.label}</span>` : ""}
-      ${action ? `<div class="action-text">"${escHtml(action)}"</div>` : ""}
-      ${actDate ? `<div class="action-date">${actDate}</div>` : ""}
-    </div>
-    <div class="card-footer">
-      <span class="chamber-tag">${chamber.toUpperCase()}</span>
-      <a class="card-link" href="${url}" target="_blank" rel="noopener">Congress.gov →</a>
-    </div>
-  </div>`;
-}
-
-function escHtml(str) {
-  return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-}
-
-function renderDashboard(bills, hlOnly) {
-  const content   = document.getElementById("content");
-  const statusBar = document.getElementById("statusBar");
-  const chips     = document.getElementById("countChips");
-
-  const hl = bills.filter(b => classifyBill(b));
-  const toShow = hlOnly ? hl : bills;
-
-  // Status chips
-  statusBar.style.display = "flex";
-  chips.innerHTML = `
-    <span class="count-chip">Total updated: <strong>${bills.length}</strong></span>
-    <span class="count-chip">Milestones: <strong>${hl.length}</strong></span>
-  `;
-
-  if (toShow.length === 0) {
-    content.innerHTML = `<div class="state-box"><span class="state-icon">📭</span><p>No ${hlOnly ? "milestone " : ""}bills found in this time window.<br>Try increasing the lookback period.</p></div>`;
-    return;
-  }
-
-  let html = "";
-
-  // Group highlights by tier first
-  for (const tier of TIERS) {
-    const tierBills = hl.filter(b => (classifyBill(b) || {}).priority === tier.priority);
-    if (tierBills.length === 0) continue;
-    html += `
-      <div class="section-header">
-        <div class="section-dot" style="background:${tier.dot}"></div>
-        <div class="section-title">${tier.label}</div>
-        <div class="section-line"></div>
-      </div>
-      <div class="cards-grid">
-        ${tierBills.map(b => renderCard(b, tier.cssClass, false)).join("")}
-      </div>`;
-  }
-
-  // If not highlights-only, show remaining bills without a milestone
-  if (!hlOnly) {
-    const rest = bills.filter(b => !classifyBill(b));
-    if (rest.length > 0) {
-      html += `
-        <div class="section-header">
-          <div class="section-dot" style="background:var(--slate-light)"></div>
-          <div class="section-title">ALL OTHER UPDATES (${rest.length})</div>
-          <div class="section-line"></div>
-        </div>
-        <div class="cards-grid">
-          ${rest.map(b => renderCard(b, "", false)).join("")}
-        </div>`;
-    }
-  }
-
-  content.innerHTML = html;
-}
-
-// ── MAIN FETCH HANDLER ─────────────────────────────────────────────────────
-async function doFetch(apiKey, days) {
-  const content = document.getElementById("content");
-  setLoading(true);
+function renderCurrent(){if(!allBills.length)return;const days=Math.max(1,Math.min(30,parseInt(document.getElementById("daysInput").value,10)||1));document.getElementById("rangeLabel").textContent="Updated within the last "+days+" day(s)";renderDashboard(filteredBills());}
+async function loadSnapshot(){
+ if(loading)return;loading=true;lastAttempt=Date.now();setLoading(true);setTicker(false);
+ const content=document.getElementById("content");if(!allBills.length)content.innerHTML='<div class="state-box"><p><span class="spinner"></span>Loading the latest public bill snapshot…</p></div>';
+ try{
+  const res=await fetch(SNAPSHOT_URL+"?t="+Date.now(),{cache:"no-store"});if(!res.ok)throw new Error("Snapshot request failed ("+res.status+").");
+  const data=await res.json();if(!data||!Array.isArray(data.bills))throw new Error("Published snapshot format is invalid.");
+  allBills=data.bills;truncated=Boolean(data.truncated);lastChecked=data.generatedAt?new Date(data.generatedAt):null;if(lastChecked&&Number.isNaN(lastChecked.getTime()))lastChecked=null;
+  setTicker(true);renderCurrent();
+ }catch(err){
   setTicker(false);
-  content.innerHTML = `<div class="state-box"><p><span class="spinner"></span>Fetching bills from Congress.gov…</p></div>`;
-
-  const since  = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const fromDt = since.toISOString().replace(/\.\d+Z$/, "Z");
-
-  document.getElementById("rangeLabel").textContent =
-    `Since: ${since.toLocaleString()}`;
-
-  try {
-    allBills   = await fetchAllBills(apiKey, fromDt);
-    highlights = allBills.filter(b => classifyBill(b));
-    lastChecked = new Date();
-    setTicker(true);
-    updateMeta();
-    renderDashboard(allBills, highlightsOnly);
-    scheduleAutoRefresh(apiKey, days);
-  } catch (err) {
-    content.innerHTML = `<div class="error-box">
-      <strong>Error fetching data</strong><br><br>
-      ${escHtml(err.message)}<br><br>
-      Check your API key and try again. If the problem persists,<br>
-      Congress.gov may be temporarily unavailable.
-    </div>`;
-    setTicker(false);
-  } finally {
-    setLoading(false);
-  }
+  if(!allBills.length)content.innerHTML='<div class="error-box"><strong>Public bill snapshot is not available yet.</strong><br><br>The GitHub Actions workflow must complete successfully once. Check the repository secret and workflow status.<br><br>Details: '+escHtml(err.message)+'</div>';
+  else{const old=content.querySelector(".refresh-warning");if(old)old.remove();const note=document.createElement("div");note.className="error-box refresh-warning";note.textContent="Could not retrieve the newest snapshot. Previously loaded data remains visible. "+err.message;content.prepend(note);}
+ }finally{loading=false;setLoading(false);scheduleRefresh();}
 }
+function triggerFetch(){loadSnapshot();}
+function toggleMode(){highlightsOnly=!highlightsOnly;const b=document.getElementById("highlightsToggle");b.textContent=highlightsOnly?"Show All Bills":"Highlights Only";b.style.borderColor=highlightsOnly?"var(--gold)":"";b.style.color=highlightsOnly?"var(--gold-light)":"";renderCurrent();}
+document.getElementById("daysInput").addEventListener("change",renderCurrent);
+window.addEventListener("focus",()=>{if(Date.now()-lastAttempt>300000)loadSnapshot();});
+loadSnapshot();
 
-function triggerFetch() {
-  const apiKey = document.getElementById("apiKeyInput").value.trim();
-  const days   = parseFloat(document.getElementById("daysInput").value) || 1;
-  if (!apiKey) {
-    alert("Please enter your Congress.gov API key.");
-    return;
-  }
-  doFetch(apiKey, days);
-}
-
-function toggleMode() {
-  highlightsOnly = !highlightsOnly;
-  const btn = document.getElementById("highlightsToggle");
-  btn.textContent = highlightsOnly ? "Show All Bills" : "Highlights Only";
-  btn.style.borderColor = highlightsOnly ? "var(--gold)" : "";
-  btn.style.color       = highlightsOnly ? "var(--gold-light)" : "";
-  if (allBills.length > 0) renderDashboard(allBills, highlightsOnly);
-}
-
-// Allow pressing Enter in the key field to kick off a fetch
-document.getElementById("apiKeyInput").addEventListener("keydown", e => {
-  if (e.key === "Enter") triggerFetch();
-});
 </script>
 </body>
 </html>
