@@ -434,8 +434,11 @@
 </div>
 
 <script>
-// ── CONSTANTS ────────────────────────────────────────────────<script>
-  dot: "#8B1A2A",
+const TIERS = [
+  {
+    priority: 1,
+    label: "BECAME LAW / VETOED",
+    dot: "#8B1A2A",
     cssClass: "tier-1",
     keywords: [
       ["became public law", "signed by president", "public law no"],
@@ -509,54 +512,169 @@ function classifyBill(bill) {
   return null;
 }
 
-// ── STATE ─────────────────────────────────────────────────────────────
+
 
 const SNAPSHOT_URL = "https://raw.githubusercontent.com/CraigOConnor01/CraigOConnor01.github.io/bill-data/bills.json";
 const REFRESH_MS = 3600000;
-let allBills = [], highlightsOnly = false, lastChecked = null, timer = null, countdown = null, nextAt = null, loading = false, lastAttempt = 0, truncated = false;
-function setLoading(v){const b=document.getElementById("fetchBtn");b.disabled=v;b.textContent=v?"Loading…":"Refresh Snapshot";}
-function setTicker(v){document.getElementById("ticker").className=v?"ticker live":"ticker";}
-function updateMeta(){
- document.getElementById("lastCheckedLabel").textContent=lastChecked?"SNAPSHOT PUBLISHED: "+lastChecked.toLocaleTimeString():"SNAPSHOT NOT YET AVAILABLE";
- if(nextAt){const s=Math.max(0,Math.round((nextAt-Date.now())/1000));document.getElementById("nextCheckLabel").textContent="NEXT CHECK: "+Math.floor(s/60)+":"+String(s%60).padStart(2,"0");}
+let allBills = [], highlightsOnly = false, lastChecked = null, refreshTimer = null, countdownTimer = null, nextCheckAt = null, loading = false, lastAttempt = 0, truncated = false;
+
+function setLoading(value) {
+  const button = document.getElementById("fetchBtn");
+  button.disabled = value;
+  button.textContent = value ? "Loading…" : "Refresh Snapshot";
 }
-function scheduleRefresh(){clearTimeout(timer);nextAt=Date.now()+REFRESH_MS;clearInterval(countdown);countdown=setInterval(updateMeta,1000);updateMeta();timer=setTimeout(loadSnapshot,REFRESH_MS);}
-function escHtml(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
-function billUrl(b){const ch=(b.originChamber||"").toLowerCase();return "https://www.congress.gov/bill/"+(b.congress||"")+"th-congress/"+(ch==="house"?"house-bill":"senate-bill")+"/"+(b.number||"");}
-function renderCard(b,cls){
- const info=classifyBill(b)||{}, action=(b.latestAction||{}).text||"", date=(b.latestAction||{}).actionDate||"";
- return '<div class="bill-card '+cls+'"><div class="card-head"><div class="bill-id">'+escHtml(String(b.type||"").toUpperCase()+(b.number||""))+'<br><span style="font-weight:400;color:var(--slate-light)">'+escHtml(b.congress?b.congress+"th":"")+'</span></div><div class="card-title-block"><div class="card-title">'+escHtml(b.title||"(no title)")+'</div></div></div><div class="card-body">'+(info.label?'<span class="milestone-badge">'+escHtml(info.label)+'</span>':"")+(action?'<div class="action-text">"'+escHtml(action)+'"</div>':"")+(date?'<div class="action-date">'+escHtml(date)+'</div>':"")+'</div><div class="card-footer"><span class="chamber-tag">'+escHtml((b.originChamber||"N/A").toUpperCase())+'</span><a class="card-link" href="'+escHtml(billUrl(b))+'" target="_blank" rel="noopener noreferrer">Congress.gov →</a></div></div>';
+function setTicker(live) {
+  document.getElementById("ticker").className = live ? "ticker live" : "ticker";
 }
-function filteredBills(){const days=Math.max(1,Math.min(30,parseInt(document.getElementById("daysInput").value,10)||1)), cutoff=Date.now()-days*86400000;return allBills.filter(b=>{const raw=b.updateDate||(b.latestAction||{}).actionDate;if(!raw)return true;const d=new Date(raw);return Number.isNaN(d.getTime())||d.getTime()>=cutoff;});}
-function renderDashboard(bills){
- const content=document.getElementById("content"), status=document.getElementById("statusBar"), chips=document.getElementById("countChips"), hl=bills.filter(b=>classifyBill(b)), show=highlightsOnly?hl:bills;
- status.style.display="flex";chips.innerHTML='<span class="count-chip">Total updated: <strong>'+bills.length+'</strong></span><span class="count-chip">Milestones: <strong>'+hl.length+'</strong></span>';
- if(!show.length){content.innerHTML='<div class="state-box"><span class="state-icon">📭</span><p>No '+(highlightsOnly?"milestone ":"")+'bills found in this time window.<br>Try increasing the lookback period.</p></div>';return;}
- let out="";
- for(const tier of TIERS){const rows=hl.filter(b=>(classifyBill(b)||{}).priority===tier.priority);if(!rows.length)continue;out+='<div class="section-header"><div class="section-dot" style="background:'+tier.dot+'"></div><div class="section-title">'+tier.label+'</div><div class="section-line"></div></div><div class="cards-grid">'+rows.map(b=>renderCard(b,tier.cssClass)).join("")+'</div>';}
- if(!highlightsOnly){const rest=bills.filter(b=>!classifyBill(b));if(rest.length)out+='<div class="section-header"><div class="section-dot" style="background:var(--slate-light)"></div><div class="section-title">ALL OTHER UPDATES ('+rest.length+')</div><div class="section-line"></div></div><div class="cards-grid">'+rest.map(b=>renderCard(b,"")).join("")+'</div>';}
- if(truncated)out='<p style="font:11px Courier New,monospace;color:var(--text-muted);margin-bottom:12px">Showing up to 400 recently updated records.</p>'+out;
- content.innerHTML=out;
+function updateMeta() {
+  document.getElementById("lastCheckedLabel").textContent = lastChecked
+    ? "SNAPSHOT PUBLISHED: " + lastChecked.toLocaleTimeString()
+    : "SNAPSHOT NOT YET AVAILABLE";
+  if (nextCheckAt) {
+    const seconds = Math.max(0, Math.round((nextCheckAt - Date.now()) / 1000));
+    document.getElementById("nextCheckLabel").textContent =
+      "NEXT CHECK: " + Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
+  }
 }
-function renderCurrent(){if(!allBills.length)return;const days=Math.max(1,Math.min(30,parseInt(document.getElementById("daysInput").value,10)||1));document.getElementById("rangeLabel").textContent="Updated within the last "+days+" day(s)";renderDashboard(filteredBills());}
-async function loadSnapshot(){
- if(loading)return;loading=true;lastAttempt=Date.now();setLoading(true);setTicker(false);
- const content=document.getElementById("content");if(!allBills.length)content.innerHTML='<div class="state-box"><p><span class="spinner"></span>Loading the latest public bill snapshot…</p></div>';
- try{
-  const res=await fetch(SNAPSHOT_URL+"?t="+Date.now(),{cache:"no-store"});if(!res.ok)throw new Error("Snapshot request failed ("+res.status+").");
-  const data=await res.json();if(!data||!Array.isArray(data.bills))throw new Error("Published snapshot format is invalid.");
-  allBills=data.bills;truncated=Boolean(data.truncated);lastChecked=data.generatedAt?new Date(data.generatedAt):null;if(lastChecked&&Number.isNaN(lastChecked.getTime()))lastChecked=null;
-  setTicker(true);renderCurrent();
- }catch(err){
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  nextCheckAt = Date.now() + REFRESH_MS;
+  clearInterval(countdownTimer);
+  countdownTimer = setInterval(updateMeta, 1000);
+  updateMeta();
+  refreshTimer = setTimeout(loadSnapshot, REFRESH_MS);
+}
+function escHtml(value) {
+  return String(value == null ? "" : value).replace(/&/g,"&amp;").replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+function billUrl(bill) {
+  const chamber = (bill.originChamber || "").toLowerCase();
+  return "https://www.congress.gov/bill/" + (bill.congress || "") + "th-congress/" +
+    (chamber === "house" ? "house-bill" : "senate-bill") + "/" + (bill.number || "");
+}
+function renderCard(bill, cssClass) {
+  const info = classifyBill(bill) || {};
+  const action = (bill.latestAction || {}).text || "";
+  const actionDate = (bill.latestAction || {}).actionDate || "";
+  return '<div class="bill-card ' + cssClass + '">' +
+    '<div class="card-head"><div class="bill-id">' +
+    escHtml(String(bill.type || "").toUpperCase() + (bill.number || "")) +
+    '<br><span style="font-weight:400;color:var(--slate-light)">' +
+    escHtml(bill.congress ? bill.congress + "th" : "") +
+    '</span></div><div class="card-title-block"><div class="card-title">' +
+    escHtml(bill.title || "(no title)") + '</div></div></div><div class="card-body">' +
+    (info.label ? '<span class="milestone-badge">' + escHtml(info.label) + '</span>' : "") +
+    (action ? '<div class="action-text">"' + escHtml(action) + '"</div>' : "") +
+    (actionDate ? '<div class="action-date">' + escHtml(actionDate) + '</div>' : "") +
+    '</div><div class="card-footer"><span class="chamber-tag">' +
+    escHtml((bill.originChamber || "N/A").toUpperCase()) +
+    '</span><a class="card-link" href="' + escHtml(billUrl(bill)) +
+    '" target="_blank" rel="noopener noreferrer">Congress.gov →</a></div></div>';
+}
+function getFilteredBills() {
+  const days = Math.max(1, Math.min(30, parseInt(document.getElementById("daysInput").value, 10) || 1));
+  const cutoff = Date.now() - days * 86400000;
+  return allBills.filter(function (bill) {
+    const rawDate = bill.updateDate || (bill.latestAction || {}).actionDate;
+    if (!rawDate) return true;
+    const date = new Date(rawDate);
+    return Number.isNaN(date.getTime()) || date.getTime() >= cutoff;
+  });
+}
+function renderDashboard(bills) {
+  const content = document.getElementById("content");
+  const statusBar = document.getElementById("statusBar");
+  const chips = document.getElementById("countChips");
+  const milestones = bills.filter(function (bill) { return classifyBill(bill); });
+  const shown = highlightsOnly ? milestones : bills;
+  statusBar.style.display = "flex";
+  chips.innerHTML = '<span class="count-chip">Total updated: <strong>' + bills.length +
+    '</strong></span><span class="count-chip">Milestones: <strong>' + milestones.length + '</strong></span>';
+  if (!shown.length) {
+    content.innerHTML = '<div class="state-box"><span class="state-icon">📭</span><p>No ' +
+      (highlightsOnly ? "milestone " : "") + 'bills found in this time window.<br>Try increasing the lookback period.</p></div>';
+    return;
+  }
+  let output = "";
+  for (const tier of TIERS) {
+    const tierBills = milestones.filter(function (bill) {
+      return (classifyBill(bill) || {}).priority === tier.priority;
+    });
+    if (!tierBills.length) continue;
+    output += '<div class="section-header"><div class="section-dot" style="background:' +
+      tier.dot + '"></div><div class="section-title">' + tier.label +
+      '</div><div class="section-line"></div></div><div class="cards-grid">' +
+      tierBills.map(function (bill) { return renderCard(bill, tier.cssClass); }).join("") + '</div>';
+  }
+  if (!highlightsOnly) {
+    const rest = bills.filter(function (bill) { return !classifyBill(bill); });
+    if (rest.length) output += '<div class="section-header"><div class="section-dot" style="background:var(--slate-light)"></div>' +
+      '<div class="section-title">ALL OTHER UPDATES (' + rest.length +
+      ')</div><div class="section-line"></div></div><div class="cards-grid">' +
+      rest.map(function (bill) { return renderCard(bill, ""); }).join("") + '</div>';
+  }
+  if (truncated) output = '<p style="font:11px Courier New,monospace;color:var(--text-muted);margin-bottom:12px">Showing up to 400 recently updated records.</p>' + output;
+  content.innerHTML = output;
+}
+function renderCurrent() {
+  if (!allBills.length) return;
+  const days = Math.max(1, Math.min(30, parseInt(document.getElementById("daysInput").value, 10) || 1));
+  document.getElementById("rangeLabel").textContent = "Updated within the last " + days + " day(s)";
+  renderDashboard(getFilteredBills());
+}
+async function loadSnapshot() {
+  if (loading) return;
+  loading = true;
+  lastAttempt = Date.now();
+  setLoading(true);
   setTicker(false);
-  if(!allBills.length)content.innerHTML='<div class="error-box"><strong>Public bill snapshot is not available yet.</strong><br><br>The GitHub Actions workflow must complete successfully once. Check the repository secret and workflow status.<br><br>Details: '+escHtml(err.message)+'</div>';
-  else{const old=content.querySelector(".refresh-warning");if(old)old.remove();const note=document.createElement("div");note.className="error-box refresh-warning";note.textContent="Could not retrieve the newest snapshot. Previously loaded data remains visible. "+err.message;content.prepend(note);}
- }finally{loading=false;setLoading(false);scheduleRefresh();}
+  const content = document.getElementById("content");
+  if (!allBills.length) content.innerHTML = '<div class="state-box"><p><span class="spinner"></span>Loading the latest public bill snapshot…</p></div>';
+  try {
+    const response = await fetch(SNAPSHOT_URL + "?t=" + Date.now(), { cache: "no-store" });
+    if (!response.ok) throw new Error("Snapshot request failed (" + response.status + ").");
+    const snapshot = await response.json();
+    if (!snapshot || !Array.isArray(snapshot.bills)) throw new Error("Published snapshot format is invalid.");
+    allBills = snapshot.bills;
+    truncated = Boolean(snapshot.truncated);
+    lastChecked = snapshot.generatedAt ? new Date(snapshot.generatedAt) : null;
+    if (lastChecked && Number.isNaN(lastChecked.getTime())) lastChecked = null;
+    setTicker(true);
+    renderCurrent();
+  } catch (error) {
+    setTicker(false);
+    if (!allBills.length) {
+      content.innerHTML = '<div class="error-box"><strong>Public bill snapshot is not available yet.</strong><br><br>' +
+        'The GitHub Actions workflow must complete successfully once. Check the repository secret and workflow status.<br><br>' +
+        'Details: ' + escHtml(error.message) + '</div>';
+    } else {
+      const oldNotice = content.querySelector(".refresh-warning");
+      if (oldNotice) oldNotice.remove();
+      const notice = document.createElement("div");
+      notice.className = "error-box refresh-warning";
+      notice.textContent = "Could not retrieve the newest snapshot. Previously loaded data remains visible. " + error.message;
+      content.prepend(notice);
+    }
+  } finally {
+    loading = false;
+    setLoading(false);
+    scheduleRefresh();
+  }
 }
-function triggerFetch(){loadSnapshot();}
-function toggleMode(){highlightsOnly=!highlightsOnly;const b=document.getElementById("highlightsToggle");b.textContent=highlightsOnly?"Show All Bills":"Highlights Only";b.style.borderColor=highlightsOnly?"var(--gold)":"";b.style.color=highlightsOnly?"var(--gold-light)":"";renderCurrent();}
-document.getElementById("daysInput").addEventListener("change",renderCurrent);
-window.addEventListener("focus",()=>{if(Date.now()-lastAttempt>300000)loadSnapshot();});
+function triggerFetch() { loadSnapshot(); }
+function toggleMode() {
+  highlightsOnly = !highlightsOnly;
+  const button = document.getElementById("highlightsToggle");
+  button.textContent = highlightsOnly ? "Show All Bills" : "Highlights Only";
+  button.style.borderColor = highlightsOnly ? "var(--gold)" : "";
+  button.style.color = highlightsOnly ? "var(--gold-light)" : "";
+  renderCurrent();
+}
+document.getElementById("daysInput").addEventListener("change", renderCurrent);
+window.addEventListener("focus", function () {
+  if (Date.now() - lastAttempt > 300000) loadSnapshot();
+});
 loadSnapshot();
 
 </script>
